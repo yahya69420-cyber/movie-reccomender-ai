@@ -187,9 +187,27 @@ if search:
                 with cols[i % 5]:
                     if row["poster"]:
                         st.image(row["poster"], width=130)
-                    st.markdown(f"**{row['title']}** ({row['year']})")
-                    st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
-                    st.caption(row["genres"])
+                    rec_results = search_tmdb(row["title"])
+                    rec_match = next((r for r in rec_results if r.get("media_type") in ["movie","tv"]), None)
+                    if rec_match:
+                        rec_id = rec_match["id"]
+                        rec_type = rec_match["media_type"]
+                        rec_link = f"https://www.themoviedb.org/{rec_type}/{rec_id}"
+                        rec_trailer = get_trailer(rec_id, rec_type)
+                        rec_providers = get_watch_providers(rec_id, rec_type)
+                        stream = rec_providers.get("flatrate", [])
+                        rec_stream = ", ".join([p["provider_name"] for p in stream[:3]]) if stream else None
+                        st.markdown(f"**[{row['title']}]({rec_link})** ({row['year']})")
+                        st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
+                        st.caption(row["genres"])
+                        if rec_trailer:
+                            st.markdown(f"[▶ Trailer]({rec_trailer})")
+                        if rec_stream:
+                            st.caption(f"Stream: {rec_stream}")
+                    else:
+                        st.markdown(f"**{row['title']}** ({row['year']})")
+                        st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
+                        st.caption(row["genres"])
         else:
             # fallback to genre-based from TMDB search
             st.info("Showing similar titles from TMDB search.")
