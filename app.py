@@ -12,44 +12,47 @@ BASE_URL = "https://api.themoviedb.org/3"
 IMG_URL  = "https://image.tmdb.org/t/p/w300"
 
 
-@st.cache_data(show_spinner="Fetching data from TMDB...")
-def fetch_items(mode="movie", pages=50):
+@st.cache_data(show_spinner="Fetching movies and TV shows from TMDB...")
+def fetch_all(pages=30):
     items = []
     genre_map = {}
 
-    r = requests.get(f"{BASE_URL}/genre/{mode}/list", headers=HEADERS)
-    for g in r.json().get("genres", []):
-        genre_map[g["id"]] = g["name"]
+    for mode in ["movie", "tv"]:
+        r = requests.get(f"{BASE_URL}/genre/{mode}/list", headers=HEADERS)
+        for g in r.json().get("genres", []):
+            genre_map[g["id"]] = g["name"]
 
-    title_key = "title" if mode == "movie" else "name"
-    date_key  = "release_date" if mode == "movie" else "first_air_date"
+    for mode in ["movie", "tv"]:
+        title_key = "title" if mode == "movie" else "name"
+        date_key  = "release_date" if mode == "movie" else "first_air_date"
+        for endpoint in ["popular", "top_rated"]:
+            for page in range(1, pages + 1):
+                r = requests.get(
+                    f"{BASE_URL}/{mode}/{endpoint}",
+                    headers=HEADERS,
+                    params={"language": "en-US", "page": page}
+                )
+                if r.status_code != 200:
+                    break
+                for m in r.json().get("results", []):
+                    title = m.get(title_key, "")
+                    if not title:
+                        continue
+                    genres = " ".join([genre_map.get(gid, "") for gid in m.get("genre_ids", [])])
+                    items.append({
+                        "id":       m["id"],
+                        "title":    title,
+                        "overview": m.get("overview", ""),
+                        "genres":   genres,
+                        "rating":   m.get("vote_average", 0),
+                        "votes":    m.get("vote_count", 0),
+                        "poster":   IMG_URL + m["poster_path"] if m.get("poster_path") else None,
+                        "year":     m.get(date_key, "")[:4],
+                        "type":     "Movie" if mode == "movie" else "TV Show",
+                        "combined": genres + " " + m.get("overview", ""),
+                    })
 
-    for endpoint in ["popular", "top_rated"]:
-        for page in range(1, pages + 1):
-            r = requests.get(
-                f"{BASE_URL}/{mode}/{endpoint}",
-                headers=HEADERS,
-                params={"language": "en-US", "page": page}
-            )
-            if r.status_code != 200:
-                break
-            for m in r.json().get("results", []):
-                title = m.get(title_key, "")
-                if not title:
-                    continue
-                genres = " ".join([genre_map.get(gid, "") for gid in m.get("genre_ids", [])])
-                items.append({
-                    "title":    title,
-                    "overview": m.get("overview", ""),
-                    "genres":   genres,
-                    "rating":   m.get("vote_average", 0),
-                    "votes":    m.get("vote_count", 0),
-                    "poster":   IMG_URL + m["poster_path"] if m.get("poster_path") else None,
-                    "year":     m.get(date_key, "")[:4],
-                    "combined": genres + " " + m.get("overview", ""),
-                })
-
-    df = pd.DataFrame(items).drop_duplicates(subset="title").reset_index(drop=True)
+    df = pd.DataFrame(items).drop_duplicates(subset=["title","type"]).reset_index(drop=True)
     return df
 
 
@@ -58,6 +61,37 @@ def build_sim(df):
     tfidf  = TfidfVectorizer(stop_words="english", max_features=10000)
     matrix = tfidf.fit_transform(df["combined"].fillna(""))
     return cosine_similarity(matrix, matrix)
+
+
+def search_tmdb(query):
+    r = requests.get(
+        f"{BASE_URL}/search/multi",
+        headers=HEADERS,
+        params={"query": query, "language": "en-US", "page": 1}
+    )
+    return r.json().get("results", [])
+
+
+def get_watch_providers(item_id, media_type):
+    r = requests.get(
+        f"{BASE_URL}/{media_type}/{item_id}/watch/providers",
+        headers=HEADERS
+    )
+    data = r.json().get("results", {})
+    us = data.get("US", data.get("GB", data.get("AE", {})))
+    return us
+
+
+def get_trailer(item_id, media_type):
+    r = requests.get(
+        f"{BASE_URL}/{media_type}/{item_id}/videos",
+        headers=HEADERS,
+        params={"language": "en-US"}
+    )
+    for v in r.json().get("results", []):
+        if v.get("site") == "YouTube" and v.get("type") in ["Trailer", "Teaser"]:
+            return f"https://www.youtube.com/watch?v={v['key']}"
+    return None
 
 
 def recommend(query, df, sim, n=10):
@@ -70,63 +104,119 @@ def recommend(query, df, sim, n=10):
     return df.iloc[[i for i, _ in scores]], df.iloc[idx]
 
 
-# ── UI ────────────────────────────────────────────────────────────────────────
-st.title("Movie & TV Show Recommender")
-st.markdown("Search any movie or TV show and get instant recommendations.")
+# ── UI ─────────────────────────────────────────────────────────────────────────
+st.title("🎬 Movie & TV Show Recommender")
+st.markdown("Search any movie or TV show — get recommendations and watch options instantly.")
 st.markdown("---")
 
-mode_label = st.radio("What are you looking for?", ["Movies", "TV Shows"], horizontal=True)
-mode = "movie" if mode_label == "Movies" else "tv"
-
-df  = fetch_items(mode=mode, pages=50)
+df  = fetch_all(pages=30)
 sim = build_sim(df)
 
-st.caption(f"Database loaded: {len(df):,} {mode_label.lower()}")
-st.markdown("---")
+st.caption(f"Database: {len(df):,} titles (movies + TV shows combined)")
 
 search = st.text_input(
-    f"Search a {mode_label[:-1].lower()} you like",
-    placeholder="e.g. Inception, Squid Game, Breaking Bad, Avatar"
+    "Search a movie or TV show",
+    placeholder="e.g. Squid Game, Inception, Breaking Bad, Avatar..."
 )
 
 if search:
-    recs, source = recommend(search, df, sim)
-    if recs is None:
-        st.error(f"Could not find '{search}'. Try another title.")
+    # First: live TMDB search for exact match
+    results = search_tmdb(search)
+    exact_match = None
+    for r in results:
+        if r.get("media_type") in ["movie", "tv"]:
+            exact_match = r
+            break
 
-        # Show closest matches
-        query_lower = search.lower()
-        close = df[df["title"].str.lower().str.contains(query_lower[:4], na=False)]["title"].head(5).tolist()
+    if exact_match:
+        media_type  = exact_match["media_type"]
+        title       = exact_match.get("title") or exact_match.get("name", "")
+        year        = (exact_match.get("release_date") or exact_match.get("first_air_date", ""))[:4]
+        overview    = exact_match.get("overview", "No description available.")
+        rating      = exact_match.get("vote_average", 0)
+        poster_path = exact_match.get("poster_path")
+        item_id     = exact_match["id"]
+        label       = "Movie" if media_type == "movie" else "TV Show"
+
+        st.markdown("---")
+        col1, col2 = st.columns([1, 3])
+
+        with col1:
+            if poster_path:
+                st.image(IMG_URL + poster_path, width=200)
+
+        with col2:
+            st.markdown(f"## {title} ({year})")
+            st.markdown(f"**{label}** | ⭐ {rating:.1f}/10")
+            st.markdown(overview)
+
+            # Trailer
+            trailer_url = get_trailer(item_id, media_type)
+            if trailer_url:
+                st.markdown(f"[▶ Watch Trailer on YouTube]({trailer_url})")
+
+            # Watch providers
+            providers = get_watch_providers(item_id, media_type)
+            stream    = providers.get("flatrate", [])
+            rent      = providers.get("rent", [])
+            buy       = providers.get("buy", [])
+            tmdb_link = providers.get("link", f"https://www.themoviedb.org/{media_type}/{item_id}")
+
+            if stream:
+                names = ", ".join([p["provider_name"] for p in stream[:5]])
+                st.success(f"**Stream on:** {names}")
+            elif rent:
+                names = ", ".join([p["provider_name"] for p in rent[:5]])
+                st.info(f"**Available to rent on:** {names}")
+            elif buy:
+                names = ", ".join([p["provider_name"] for p in buy[:3]])
+                st.info(f"**Available to buy on:** {names}")
+            else:
+                st.warning("No streaming info available for your region.")
+
+            st.markdown(f"[🔗 View on TMDB]({tmdb_link})")
+
+        # Recommendations
+        st.markdown("---")
+        st.subheader(f"Because you searched **{title}** — you might also like:")
+
+        recs, _ = recommend(title, df, sim)
+        if recs is not None:
+            cols = st.columns(5)
+            for i, (_, row) in enumerate(recs.head(10).iterrows()):
+                with cols[i % 5]:
+                    if row["poster"]:
+                        st.image(row["poster"], width=130)
+                    st.markdown(f"**{row['title']}** ({row['year']})")
+                    st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
+                    st.caption(row["genres"])
+        else:
+            # fallback to genre-based from TMDB search
+            st.info("Showing similar titles from TMDB search.")
+            for r2 in results[1:6]:
+                t = r2.get("title") or r2.get("name", "")
+                st.markdown(f"- {t}")
+
+    else:
+        st.error(f"Could not find '{search}'. Try a different spelling.")
+        close = df[df["title"].str.lower().str.contains(search.lower()[:4], na=False)]["title"].head(5).tolist()
         if close:
             st.markdown("**Did you mean:**")
             for t in close:
                 st.markdown(f"- {t}")
-    else:
-        st.success(f"Because you liked **{source['title']} ({source['year']})**:")
-        st.markdown("---")
-        cols = st.columns(5)
-        for i, (_, row) in enumerate(recs.head(10).iterrows()):
-            with cols[i % 5]:
-                if row["poster"]:
-                    st.image(row["poster"], use_container_width=True)
-                else:
-                    st.markdown("_(No poster)_")
-                st.markdown(f"**{row['title']}** ({row['year']})")
-                st.markdown(f"⭐ {row['rating']:.1f}/10")
-                st.caption(row["genres"])
 
 st.markdown("---")
 
-# Trending section
-st.subheader(f"Top Rated {mode_label}")
-top = df[df["votes"] > 500].sort_values("rating", ascending=False).head(10)
+# Trending
+st.subheader("Top Rated Right Now")
+top = df[df["votes"] > 1000].sort_values("rating", ascending=False).head(10)
 cols2 = st.columns(5)
 for i, (_, row) in enumerate(top.iterrows()):
     with cols2[i % 5]:
         if row["poster"]:
-            st.image(row["poster"], use_container_width=True)
+            st.image(row["poster"], width=130)
         st.markdown(f"**{row['title']}** ({row['year']})")
-        st.markdown(f"⭐ {row['rating']:.1f}/10")
+        st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
 
 st.markdown("---")
-st.caption("Powered by TMDB API | TF-IDF + Cosine Similarity")
+st.caption("Powered by TMDB API | TF-IDF + Cosine Similarity | Watch providers by JustWatch via TMDB")
