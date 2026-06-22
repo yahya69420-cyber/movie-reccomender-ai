@@ -228,30 +228,37 @@ st.markdown("---")
 # Trending
 st.subheader("Top Rated Right Now")
 top = df[df["votes"] > 1000].sort_values("rating", ascending=False).head(10)
-cols2 = st.columns(5)
-for i, (_, row) in enumerate(top.iterrows()):
-    with cols2[i % 5]:
-        if row["poster"]:
-            st.image(row["poster"], width=130)
-        rec_results2 = search_tmdb(row["title"])
-        rec_match2 = next((r for r in rec_results2 if r.get("media_type") in ["movie","tv"]), None)
-        if rec_match2:
-            rec_id2 = rec_match2["id"]
-            rec_type2 = rec_match2["media_type"]
-            rec_link2 = f"https://www.themoviedb.org/{rec_type2}/{rec_id2}"
-            rec_trailer2 = get_trailer(rec_id2, rec_type2)
-            rec_providers2 = get_watch_providers(rec_id2, rec_type2)
-            stream2 = rec_providers2.get("flatrate", [])
-            rec_stream2 = ", ".join([p["provider_name"] for p in stream2[:3]]) if stream2 else None
-            st.markdown(f"**[{row['title']}]({rec_link2})** ({row['year']})")
+
+rows = [top.iloc[i:i+5] for i in range(0, len(top), 5)]
+for row_df in rows:
+    cols2 = st.columns(5)
+    for i, (_, row) in enumerate(row_df.iterrows()):
+        with cols2[i]:
+            # Poster — always same height box
+            if row["poster"]:
+                st.image(row["poster"], use_container_width=True)
+            else:
+                st.markdown('<div style="height:195px;background:#222;border-radius:8px;"></div>', unsafe_allow_html=True)
+            # Info
+            rec_results2 = search_tmdb(row["title"])
+            rec_match2 = next((r for r in rec_results2 if r.get("media_type") in ["movie","tv"]), None)
+            if rec_match2:
+                rec_id2 = rec_match2["id"]
+                rec_type2 = rec_match2["media_type"]
+                rec_link2 = f"https://www.themoviedb.org/{rec_type2}/{rec_id2}"
+                rec_trailer2 = get_trailer(rec_id2, rec_type2)
+                rec_providers2 = get_watch_providers(rec_id2, rec_type2)
+                stream2 = rec_providers2.get("flatrate", [])
+                rec_stream2 = ", ".join([p["provider_name"] for p in stream2[:2]]) if stream2 else "Not available"
+                st.markdown(f"**[{row['title']}]({rec_link2})** ({row['year']})")
+            else:
+                rec_trailer2 = None
+                rec_stream2 = "Not available"
+                st.markdown(f"**{row['title']}** ({row['year']})")
             st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
-            if rec_trailer2:
-                st.markdown(f"[▶ Trailer]({rec_trailer2})")
-            if rec_stream2:
-                st.caption(f"Stream: {rec_stream2}")
-        else:
-            st.markdown(f"**{row['title']}** ({row['year']})")
-            st.caption(f"{row['type']} | ⭐ {row['rating']:.1f}")
+            st.caption(f"📺 {rec_stream2}")
+            st.markdown(f"[▶ Trailer]({rec_trailer2})" if rec_trailer2 else "▶ No trailer")
+    st.markdown("")
 
 st.markdown("---")
 st.caption("Powered by TMDB API | TF-IDF + Cosine Similarity | Watch providers by JustWatch via TMDB")
